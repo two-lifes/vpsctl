@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Usage:
-#   tests/scripts/run.sh <24.04|26.04> [test-file...]   run tests in a privileged systemd container (ADR-038)
+#   tests/scripts/run.sh <24.04|26.04> [test-file...]   run each test file in its own privileged systemd container (ADR-038)
 #   tests/scripts/run.sh --inside [test-file...]        run tests in the current environment (used inside the container)
 # Without test files, all tests/scripts/*_test.sh are run. Test file paths are relative to the repository root.
 
@@ -13,16 +13,22 @@ usage() {
 	exit 2
 }
 
-run_inside() {
-	local tests=() t failed=0 passed=0
+# Fills TESTS with the given files or, without arguments, all test files.
+list_tests() {
 	cd "$REPO_ROOT"
 	if [[ $# -gt 0 ]]; then
-		tests=("$@")
+		TESTS=("$@")
 	else
 		shopt -s nullglob
-		tests=(tests/scripts/*_test.sh)
+		TESTS=(tests/scripts/*_test.sh)
 		shopt -u nullglob
 	fi
+}
+
+run_inside() {
+	local tests=() t failed=0 passed=0
+	list_tests "$@"
+	tests=("${TESTS[@]}")
 	if [[ ${#tests[@]} -eq 0 ]]; then
 		echo "no tests"
 		return 0
@@ -54,21 +60,36 @@ wait_for_systemd() {
 	return 1
 }
 
+# Each test file gets a fresh container: bootstrap tests change the whole system and assume a clean one.
 run_in_container() {
-	local version="$1" image container
+	local version="$1" image container t failed=0 passed=0
 	shift
+	list_tests "$@"
+	echo "ubuntu:${version}"
+	if [[ ${#TESTS[@]} -eq 0 ]]; then
+		echo "no tests"
+		return 0
+	fi
 	image="vpsctl-scripts-test:${version}"
 	docker build --quiet --build-arg "UBUNTU_VERSION=${version}" -t "$image" "$REPO_ROOT/tests/scripts" >/dev/null
-	container="$(docker run -d --privileged --cgroupns=host \
-		-v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-		--tmpfs /run --tmpfs /run/lock \
-		-v "$REPO_ROOT:/src:ro" \
-		"$image")"
-	# shellcheck disable=SC2064 # expand $container now: it is local and gone when the trap fires
-	trap "docker rm -f '$container' >/dev/null" EXIT
-	wait_for_systemd "$container"
-	echo "ubuntu:${version}"
-	docker exec "$container" bash /src/tests/scripts/run.sh --inside "$@"
+	for t in "${TESTS[@]}"; do
+		container="$(docker run -d --privileged --cgroupns=host \
+			-v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+			--tmpfs /run --tmpfs /run/lock \
+			-v "$REPO_ROOT:/src:ro" \
+			"$image")"
+		# shellcheck disable=SC2064 # expand $container now: it is local and gone when the trap fires
+		trap "docker rm -f '$container' >/dev/null" EXIT
+		if wait_for_systemd "$container" && docker exec "$container" bash /src/tests/scripts/run.sh --inside "$t"; then
+			passed=$((passed + 1))
+		else
+			failed=$((failed + 1))
+		fi
+		docker rm -f "$container" >/dev/null
+		trap - EXIT
+	done
+	echo "ubuntu:${version} test files passed: $passed, failed: $failed"
+	[[ "$failed" -eq 0 ]]
 }
 
 [[ $# -ge 1 ]] || usage
