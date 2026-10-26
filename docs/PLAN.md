@@ -62,7 +62,8 @@
 - **Проверки:** mini, scripts-docker (два запуска подряд)
 
 ### T-1.6 Спецификация `vpsctl.yml` и шаблоны bot, web
-- [ ] Статус
+- [x] Статус
+- **Итог:** `templates/bot` и `templates/web` (`compose.yml`, `vpsctl.yml`): `restart: unless-stopped`, `env_file: ../.env`, у `bot` нет `ports`, у `web` — `127.0.0.1:8080:8080` = `port` манифеста; образ — `build: .` + `image: ${VPSCTL_IMAGE:-vpsctl-<проект>:local}` (ADR-048); SERVER-STANDARD §8 — формат v1 (правила полей, пример, требования к compose); проверка `tests/templates/check.sh` (`docker compose config` в раскладке `/opt/<p>/{app,.env}`, restart, env_file, порты, образ с `VPSCTL_IMAGE` и без, поля манифеста) и CI-job `templates`; локально прогнана с `docker compose` v5.6.0 и `yq` v4.54.1. За рамками: `web+db`, `static` (T-1.7), передача `VPSCTL_IMAGE` в `vpsctl-deploy` (T-1.8), Go-валидация манифеста (T-4.1), рендер шаблонов (T-4.2).
 - **Блокер (ADR-047):** снят 2026-10-26 — пользователь принял зеленый CI-job `scripts` (ubuntu 24.04 и 26.04, все тесты T-1.1…T-1.5) как проверку; локальный прогон в Docker Desktop/WSL не удался (systemd в контейнере не стартует). Проверка ufw/sshd на тестовом VPS остается в T-1.gate.
 - **Цель:** зафиксировать формат манифеста v1 и шаблоны compose/манифеста для `bot` и `web`.
 - **Требования:** F-18, F-10

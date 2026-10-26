@@ -1,0 +1,9 @@
+name: my-bot
+template: bot
+compose: compose.yml
+image: null
+env:
+  - BOT_TOKEN
+domain: null
+port: null
+healthcheck: null

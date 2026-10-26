@@ -72,6 +72,16 @@ jobs:
           printf '%s\n' "${files[@]}"
           shellcheck "${files[@]}"
 
+  templates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The runner image ships docker compose, jq and yq v4; the check needs no Docker daemon.
+      - name: Tool versions
+        run: docker compose version && jq --version && yq --version
+      - name: Template checks
+        run: tests/templates/check.sh
+
   scripts:
     runs-on: ubuntu-latest
     strategy:

@@ -111,15 +111,39 @@ updated_at: 2026-10-26T12:00:00Z        # последний успешный з
 - Пишет строку в `releases.log` при любом исходе.
 - Код выхода 0 — только при успешном запуске (и healthcheck, если задан — F-12).
 
-## 8. Манифест `vpsctl.yml` (формат v1, черновик SPEC)
+## 8. Манифест `vpsctl.yml` (формат v1)
 
 | Поле | Тип | Обязательное | Описание |
 | --- | --- | --- | --- |
 | `name` | string | да | Имя проекта (правило из раздела 3) |
 | `template` | enum | да | `bot` \| `web` \| `web+db` \| `static` |
-| `compose` | string | да | Путь к compose-файлу в репозитории |
-| `image` | string \| null | нет | Образ в GHCR; `null` — сборка на сервере |
-| `env` | string[] | нет | Ключи, которые запрашиваются при деплое |
-| `domain` | string \| null | нет | Домен; `null` — доступ по IP:порт |
-| `port` | int \| null | для `web`, `web+db`, `static` | Порт на 127.0.0.1 для nginx |
+| `compose` | string | да | Путь к compose-файлу относительно корня репозитория |
+| `image` | string \| null | нет | Образ в GHCR; `null` или нет поля — сборка на сервере |
+| `env` | string[] | нет | Ключи, которые запрашиваются при деплое; формат `[A-Z_][A-Z0-9_]*` |
+| `domain` | string \| null | нет | Домен (hostname); `null` — доступ по IP:порт (ADR-032) |
+| `port` | int \| null | для `web`, `web+db`, `static` | Порт 1–65535 на 127.0.0.1 для nginx; у `bot` — `null` |
 | `healthcheck` | string \| null | нет | URL, например `http://127.0.0.1:8080/health` |
+
+Пример (шаблон `bot`, `templates/bot/vpsctl.yml`):
+
+```yaml
+name: my-bot
+template: bot
+compose: compose.yml
+image: null
+env:
+  - BOT_TOKEN
+domain: null
+port: null
+healthcheck: null
+```
+
+Требования к compose-файлу проекта (шаблоны — `templates/<шаблон>/compose.yml`):
+
+- Запускается из `/opt/<проект>/app/` под именем проекта `vpsctl-<проект>`; поле `name:` в compose не задается.
+- У каждого сервиса `restart: unless-stopped`.
+- Сервисы приложения подключают секреты через `env_file: ../.env` (файл `/opt/<проект>/.env`).
+- Порты — только `127.0.0.1:<port>:<container-port>`; у `bot` портов нет; для `web`, `web+db`, `static` один из портов публикуется на `port` из манифеста.
+- Образ приложения: `build: .` и `image: ${VPSCTL_IMAGE:-vpsctl-<проект>:local}` (ADR-048). `vpsctl-deploy` передает `VPSCTL_IMAGE` из поля `image` манифеста и делает `pull` + `up -d`; при `image: null` переменная не задается, образ собирается на сервере (`up -d --build`) с тегом по умолчанию.
+
+Проверка шаблонов — `tests/templates/check.sh` (CI-job `templates`).

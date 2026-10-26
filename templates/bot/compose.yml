@@ -1,0 +1,8 @@
+# Bot: one container, no published ports. Runs from /opt/<project>/app; secrets live in /opt/<project>/.env.
+services:
+  app:
+    build: .
+    # vpsctl-deploy sets VPSCTL_IMAGE from `image` in vpsctl.yml; the default tags a server-side build (ADR-048).
+    image: ${VPSCTL_IMAGE:-vpsctl-my-bot:local}
+    restart: unless-stopped
+    env_file: ../.env

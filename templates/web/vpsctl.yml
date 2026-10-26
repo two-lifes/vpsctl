@@ -1,0 +1,8 @@
+name: my-web
+template: web
+compose: compose.yml
+image: null
+env: []
+domain: null
+port: 8080
+healthcheck: null

@@ -1,0 +1,11 @@
+# Web app: published on 127.0.0.1 only, host nginx proxies to it. Runs from /opt/<project>/app; secrets live in
+# /opt/<project>/.env.
+services:
+  app:
+    build: .
+    # vpsctl-deploy sets VPSCTL_IMAGE from `image` in vpsctl.yml; the default tags a server-side build (ADR-048).
+    image: ${VPSCTL_IMAGE:-vpsctl-my-web:local}
+    restart: unless-stopped
+    env_file: ../.env
+    ports:
+      - "127.0.0.1:8080:8080"
