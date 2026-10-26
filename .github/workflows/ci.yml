@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # go vet/test and golangci-lint fail on a module without packages, so Go checks start once the first package exists.
+      - name: Detect Go packages
+        id: detect
+        run: |
+          if [ -n "$(go list ./... 2>/dev/null)" ]; then
+            echo "has_go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_go=false" >> "$GITHUB_OUTPUT"
+            echo "No Go packages yet; skipping vet, lint and tests."
+          fi
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "Files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: go mod tidy check
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod
+      - name: go vet
+        if: steps.detect.outputs.has_go == 'true'
+        run: go vet ./...
+      - name: go build
+        if: steps.detect.outputs.has_go == 'true'
+        run: go build ./...
+      - name: golangci-lint
+        if: steps.detect.outputs.has_go == 'true'
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+      - name: go test
+        if: steps.detect.outputs.has_go == 'true'
+        run: go test -race ./...
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update && sudo apt-get install -y shellcheck; }
+          shellcheck --version
+          mapfile -t files < <(
+            git ls-files -z | xargs -0 -r grep -lIE '^#!(/usr/bin/env |/bin/)(ba)?sh' 2>/dev/null || true
+            git ls-files '*.sh'
+          )
+          mapfile -t files < <(printf '%s\n' "${files[@]}" | sed '/^$/d' | sort -u)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No shell scripts yet."
+            exit 0
+          fi
+          printf '%s\n' "${files[@]}"
+          shellcheck "${files[@]}"
+
+  scripts:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ["24.04", "26.04"]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Script tests in ubuntu:${{ matrix.ubuntu }}
+        run: |
+          if [ ! -x tests/scripts/run.sh ]; then
+            echo "tests/scripts/run.sh not present yet; nothing to run."
+            exit 0
+          fi
+          tests/scripts/run.sh "${{ matrix.ubuntu }}"
