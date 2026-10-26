@@ -28,9 +28,14 @@ SUDOERS_FILE="/etc/sudoers.d/vpsctl-deploy"
 VPSCTL_ROOT="/usr/local/sbin/vpsctl-root"
 DEPLOY_KEY_RE='^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]+={0,3}( [^[:cntrl:]]*)?$'
 
+SSHD_DROPIN="/etc/ssh/sshd_config.d/00-vpsctl.conf"
+
 ARCH=""
 CODENAME=""
 DEPLOY_KEY=""
+SSH_PORTS=()
+LOGIN_CHECK_DIR=""
+LOGIN_CHECK_PID=""
 
 usage() {
 	die "usage: bootstrap.sh --deploy-key '<ssh public key>'"
@@ -251,6 +256,178 @@ step_user() {
 	log "done"
 }
 
+# sshd refuses to parse its config without the privilege separation directory, which is absent while
+# ssh.service waits for socket activation.
+ensure_privsep_dir() {
+	[[ -d /run/sshd ]] || install -d -m 0755 /run/sshd
+}
+
+sshd_effective() {
+	sshd -T 2>/dev/null | awk -v k="$1" '$1 == k { print $2 }'
+}
+
+# The port is never changed (ADR-040): every port sshd is configured for stays open, plus the port of the
+# current connection in case it differs (e.g. a socket unit override).
+detect_ssh_ports() {
+	local ports p
+	ports="$(sshd_effective port)"
+	if [[ -n "${SSH_CONNECTION:-}" ]]; then
+		read -r _ _ _ p <<<"$SSH_CONNECTION"
+		ports+=$'\n'"$p"
+	fi
+	mapfile -t SSH_PORTS < <(grep -E '^[0-9]+$' <<<"$ports" | sort -un)
+	[[ ${#SSH_PORTS[@]} -gt 0 ]] || die "cannot determine the SSH port"
+}
+
+firewall_done() {
+	local status port
+	status="$(ufw status verbose 2>/dev/null)" || return 1
+	grep -q '^Status: active$' <<<"$status" || return 1
+	grep -q 'deny (incoming)' <<<"$status" || return 1
+	for port in "${SSH_PORTS[@]}" 80 443; do
+		grep -Eq "^${port}/tcp +ALLOW IN +Anywhere *$" <<<"$status" || return 1
+	done
+}
+
+step_firewall() {
+	export VPSCTL_STEP=4
+	command -v sshd >/dev/null || die "sshd is not installed"
+	ensure_privsep_dir
+	detect_ssh_ports
+	log "ssh port(s): ${SSH_PORTS[*]}"
+	if firewall_done; then
+		log "skip"
+		return 0
+	fi
+	ufw default deny incoming
+	ufw default allow outgoing
+	local port
+	# SSH goes first so the firewall never comes up without it.
+	for port in "${SSH_PORTS[@]}" 80 443; do
+		ufw allow "$port/tcp"
+	done
+	ufw --force enable
+	firewall_done || die "ufw is not configured after step 4"
+	log "done"
+}
+
+sshd_dropin_content() {
+	printf '# Managed by vpsctl bootstrap (ADR-029, ADR-045).\nPermitRootLogin no\nPasswordAuthentication no\n'
+}
+
+sshd_done() {
+	[[ -f "$SSHD_DROPIN" && "$(<"$SSHD_DROPIN")" == "$(sshd_dropin_content)" ]] || return 1
+	[[ "$(sshd_effective permitrootlogin)" == no && "$(sshd_effective passwordauthentication)" == no ]]
+}
+
+port_in_use() {
+	(exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
+cleanup_login_check() {
+	if [[ -n "$LOGIN_CHECK_PID" ]]; then
+		kill "$LOGIN_CHECK_PID" 2>/dev/null || true
+		wait "$LOGIN_CHECK_PID" 2>/dev/null || true
+	fi
+	[[ -z "$LOGIN_CHECK_DIR" ]] || rm -rf "$LOGIN_CHECK_DIR"
+	LOGIN_CHECK_PID=""
+	LOGIN_CHECK_DIR=""
+}
+
+# Logs in as deploy through a temporary sshd on 127.0.0.1 that reads the new configuration (ADR-045). The
+# private deploy key never reaches the server, so a one-time key stands in for it; everything else
+# (AllowUsers/DenyUsers, shell, account state, PAM) is checked for real. Called in a condition, so every
+# failure is handled explicitly.
+verify_deploy_login() {
+	local dir port i sshd_bin
+	deploy_key_present || {
+		log "deploy key is missing from $DEPLOY_HOME/.ssh/authorized_keys"
+		return 1
+	}
+	sshd_bin="$(command -v sshd)" || return 1
+	trap cleanup_login_check EXIT
+	# Under /run, not /tmp: StrictModes rejects world-writable parents, and sshd reads the key file as deploy.
+	dir="$(mktemp -d -p /run vpsctl-login.XXXXXX)" || return 1
+	LOGIN_CHECK_DIR="$dir"
+	chmod 0755 "$dir" || return 1
+	ssh-keygen -q -t ed25519 -N '' -C vpsctl-login-check -f "$dir/key" || return 1
+	install -m 0644 "$dir/key.pub" "$dir/$DEPLOY_USER" || return 1
+	port=""
+	for ((i = 0; i < 20; i++)); do
+		port=$((20000 + RANDOM % 20000))
+		port_in_use "$port" || break
+		port=""
+	done
+	[[ -n "$port" ]] || {
+		log "no free port for the temporary sshd"
+		return 1
+	}
+	"$sshd_bin" -D -e -f /etc/ssh/sshd_config -p "$port" -o ListenAddress=127.0.0.1 \
+		-o "PidFile=$dir/sshd.pid" -o "AuthorizedKeysFile=$dir/%u" >"$dir/sshd.log" 2>&1 &
+	LOGIN_CHECK_PID=$!
+	for ((i = 0; i < 50; i++)); do
+		port_in_use "$port" && break
+		kill -0 "$LOGIN_CHECK_PID" 2>/dev/null || break
+		sleep 0.1
+	done
+	if ! ssh -n -F /dev/null -i "$dir/key" -p "$port" -o BatchMode=yes -o IdentitiesOnly=yes \
+		-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR \
+		"$DEPLOY_USER@127.0.0.1" true; then
+		log "temporary sshd log:"
+		sed 's/^/  /' "$dir/sshd.log" || true
+		cleanup_login_check
+		trap - EXIT
+		return 1
+	fi
+	cleanup_login_check
+	trap - EXIT
+}
+
+# Puts back the drop-in that was there before step 5 (or removes it) so a failed step leaves sshd as it was.
+restore_sshd_dropin() {
+	local backup="$1"
+	if [[ -n "$backup" ]]; then
+		install -m 0644 -o root -g root "$backup" "$SSHD_DROPIN"
+		rm -f "$backup"
+	else
+		rm -f "$SSHD_DROPIN"
+	fi
+}
+
+step_sshd() {
+	export VPSCTL_STEP=5
+	ensure_privsep_dir
+	if sshd_done; then
+		log "skip"
+		return 0
+	fi
+	local backup="" tmp
+	if [[ -f "$SSHD_DROPIN" ]]; then
+		backup="$(mktemp)"
+		cp "$SSHD_DROPIN" "$backup"
+	fi
+	log "writing $SSHD_DROPIN"
+	tmp="$(mktemp)"
+	sshd_dropin_content >"$tmp"
+	install -m 0644 -o root -g root "$tmp" "$SSHD_DROPIN"
+	rm -f "$tmp"
+	if ! sshd -t; then
+		restore_sshd_dropin "$backup"
+		die "sshd configuration is invalid; sshd was not reloaded"
+	fi
+	log "checking login as $DEPLOY_USER"
+	if ! verify_deploy_login; then
+		restore_sshd_dropin "$backup"
+		die "login as $DEPLOY_USER failed with the new sshd configuration; sshd was not reloaded"
+	fi
+	[[ -z "$backup" ]] || rm -f "$backup"
+	log "reloading ssh.service"
+	# Inactive under socket activation means the next connection starts sshd with the new config anyway.
+	systemctl try-reload-or-restart ssh.service
+	sshd_done || die "sshd is not configured after step 5"
+	log "done"
+}
+
 main() {
 	parse_args "$@"
 	require_root
@@ -258,6 +435,8 @@ main() {
 	step_os
 	step_packages
 	step_user
+	step_firewall
+	step_sshd
 }
 
 main "$@"

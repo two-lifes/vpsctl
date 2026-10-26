@@ -44,7 +44,8 @@
 - **Проверки:** mini, scripts-docker
 
 ### T-1.4 Bootstrap: ufw и sshd (шаги 4–5)
-- [ ] Статус
+- [x] Статус
+- **Итог:** `bootstrap.sh` шаг 4 — ufw: deny incoming, текущие SSH-порты (`sshd -T` + `SSH_CONNECTION`, порт не меняется), 80, 443, SSH-правило до включения; шаг 5 — drop-in `00-vpsctl.conf` (`PermitRootLogin no`, `PasswordAuthentication no`), `sshd -t`, проверка входа под `deploy` через временный sshd на 127.0.0.1 с одноразовым ключом (ADR-045), при неудаче откат drop-in без перезагрузки sshd и код ≠0, иначе `try-reload-or-restart ssh.service`; тест `bootstrap_net_test.sh` (правила, `sshd -T`, повтор со `skip`, кастомный порт, `DenyUsers deploy` → откат, восстановление прежнего drop-in, починка дрейфа); в тестовый образ добавлен `openssh-server`. Контейнерные прогоны проверяются только в CI (локально нет Docker). За рамками: полная проверка ufw/sshd на тестовом VPS (T-1.gate), реальный вход клиента под `deploy` (T-3.4).
 - **Цель:** настроить файрвол и отключить root/пароль только после подтвержденного входа под `deploy`.
 - **Требования:** F-03, F-04; SPEC §7 п. 4–5
 - **Файлы:** `scripts/bootstrap.sh`, `tests/scripts/bootstrap_net_test.sh`
