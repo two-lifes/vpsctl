@@ -81,9 +81,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Script tests in ubuntu:${{ matrix.ubuntu }}
+        run: tests/scripts/run.sh "${{ matrix.ubuntu }}"
+      - name: Failing test is reported
         run: |
-          if [ ! -x tests/scripts/run.sh ]; then
-            echo "tests/scripts/run.sh not present yet; nothing to run."
-            exit 0
+          if tests/scripts/run.sh "${{ matrix.ubuntu }}" tests/scripts/fixtures/failing_test.sh; then
+            echo "run.sh returned 0 for a failing test"
+            exit 1
           fi
-          tests/scripts/run.sh "${{ matrix.ubuntu }}"

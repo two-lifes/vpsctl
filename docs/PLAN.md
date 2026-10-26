@@ -17,7 +17,8 @@
 Результат: bootstrap, `vpsctl-deploy` и шаблоны, проверенные в контейнерах и вручную на тестовом VPS.
 
 ### T-1.1 Тестовая инфраструктура скриптов
-- [ ] Статус
+- [x] Статус
+- **Итог:** `scripts/lib/common.sh` (`log`, `die`, `require_root`, `os_check` с подменой `VPSCTL_OS_RELEASE`), раннер `tests/scripts/run.sh` (privileged-контейнер с systemd или `--inside`), хелперы `tests/scripts/lib.sh`, unit-тесты `common.sh`, CI-job `scripts` с самопроверкой падающего теста; контейнерные прогоны проверяются только в CI (локально нет Docker).
 - **Цель:** запуск тестов bash-скриптов в контейнерах Ubuntu 24.04/26.04 локально и в CI; общая библиотека функций.
 - **Требования:** F-03, F-04 (основа), ADR-023
 - **Файлы:** `scripts/lib/common.sh`, `tests/scripts/run.sh`, `tests/scripts/Dockerfile` (или аргументы образа), `tests/scripts/lib.sh`, `.github/workflows/ci.yml` (job scripts-docker)
