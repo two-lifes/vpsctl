@@ -8,6 +8,11 @@ export REPO_ROOT
 TEST_DEPLOY_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDhAP1G1sijnc/8jJyPtrCYnlQQvdJ24Wt+v5H05bKac vpsctl-test"
 export TEST_DEPLOY_KEY
 
+# Stand-ins for vpsctl-deploy and vpsctl-root installed by bootstrap step 6 (ADR-046); replaced by the real
+# scripts in T-1.8 and T-1.9.
+VPSCTL_SCRIPTS_DIR="$REPO_ROOT/tests/scripts/fixtures/server-scripts"
+export VPSCTL_SCRIPTS_DIR
+
 TEST_FAILURES=0
 status=0
 output=""

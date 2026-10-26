@@ -53,7 +53,8 @@
 - **Проверки:** mini, scripts-docker (ufw/sshd — в объеме контейнера; полностью — на тестовом VPS, ADR-038)
 
 ### T-1.5 Bootstrap: раскладка, server.yml, unattended-upgrades (шаги 6–7)
-- [ ] Статус
+- [x] Статус
+- **Итог:** `bootstrap.sh` шаг 6 — `/opt` (deploy, 755), `/etc/vpsctl`, установка `vpsctl-deploy`/`vpsctl-root` (root, 755) со сравнением по содержимому; источник — функции `vpsctl_script_*` в stdin-потоке или `VPSCTL_SCRIPTS_DIR`/каталог скрипта, нет источника — ошибка до установки (ADR-046); шаг 7 — unattended-upgrades и `20auto-upgrades`, флаг `--no-unattended-upgrades`; `server.yml` (ADR-027) пишется в конце только при изменениях, `bootstrapped_at` сохраняется. Тесты `bootstrap_layout_test.sh` (права, поля, sudo на `vpsctl-root`, stdin-поток с payload и без, дрейф, флаг) и `bootstrap_idempotent_test.sh` (повтор: все шаги `skip`, состояние побайтно и по mtime то же); тесты ставят фикстурные скрипты из `tests/scripts/fixtures/server-scripts`. Контейнерные прогоны проверяются только в CI (локально нет Docker). За рамками: сами `vpsctl-deploy` (T-1.8) и `vpsctl-root` (T-1.9) — до них запуск из checkout без `VPSCTL_SCRIPTS_DIR` завершается ошибкой на шаге 6, тесты нужно переключить на реальные скрипты; `vpsctl-collect` (T-2.5); сборка stdin-потока в клиенте (T-3.3).
 - **Цель:** создать `/opt`, `/etc/vpsctl/server.yml`, установить `vpsctl-deploy` и `vpsctl-root` (коллектор — с T-2.5), включить unattended-upgrades (по умолчанию, флаг отключает); финальный тест идемпотентности.
 - **Требования:** F-03, F-04
 - **Файлы:** `scripts/bootstrap.sh`, `tests/scripts/bootstrap_layout_test.sh`, `tests/scripts/bootstrap_idempotent_test.sh`

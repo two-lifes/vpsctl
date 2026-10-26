@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Test stand-in for scripts/vpsctl-root, installed by bootstrap step 6 until the real script exists.
+if [[ "${1:-}" == --version ]]; then
+	echo "vpsctl-root 0.0.0-test"
+fi

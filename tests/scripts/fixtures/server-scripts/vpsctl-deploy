@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Test stand-in for scripts/vpsctl-deploy, installed by bootstrap step 6 until the real script exists.
+if [[ "${1:-}" == --version ]]; then
+	echo "vpsctl-deploy 0.0.0-test"
+fi

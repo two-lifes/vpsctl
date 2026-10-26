@@ -30,15 +30,34 @@ DEPLOY_KEY_RE='^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed2551
 
 SSHD_DROPIN="/etc/ssh/sshd_config.d/00-vpsctl.conf"
 
+STANDARD_VERSION="1"
+PROJECTS_ROOT="/opt"
+VPSCTL_ETC="/etc/vpsctl"
+SERVER_YML="$VPSCTL_ETC/server.yml"
+# Server scripts by name -> install path. vpsctl-collect joins in T-2.5.
+declare -A SERVER_SCRIPTS=(
+	[vpsctl-deploy]="/usr/local/bin/vpsctl-deploy"
+	[vpsctl-root]="$VPSCTL_ROOT"
+)
+# Empty when the script arrives on stdin: server scripts then come only from vpsctl_script_* functions (ADR-046).
+SCRIPT_DIR=""
+[[ -f "${BASH_SOURCE[0]:-}" ]] && SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
+
+AUTO_UPGRADES="/etc/apt/apt.conf.d/20auto-upgrades"
+
 ARCH=""
 CODENAME=""
 DEPLOY_KEY=""
+UNATTENDED_UPGRADES=1
 SSH_PORTS=()
 LOGIN_CHECK_DIR=""
 LOGIN_CHECK_PID=""
+STAGE_DIR=""
+# Set by any step that changed the system; server.yml is rewritten only then (F-04).
+CHANGED=0
 
 usage() {
-	die "usage: bootstrap.sh --deploy-key '<ssh public key>'"
+	die "usage: bootstrap.sh --deploy-key '<ssh public key>' [--no-unattended-upgrades]"
 }
 
 # Input is validated before step 1 so a bad invocation never changes the system.
@@ -49,6 +68,10 @@ parse_args() {
 			[[ $# -ge 2 ]] || usage
 			DEPLOY_KEY="$2"
 			shift 2
+			;;
+		--no-unattended-upgrades)
+			UNATTENDED_UPGRADES=0
+			shift
 			;;
 		*)
 			die "unknown argument: $1"
@@ -161,6 +184,7 @@ step_packages() {
 	apt_install "${DOCKER_PACKAGES[@]}"
 	install_yq
 	packages_done || die "packages are not installed after step 2"
+	CHANGED=1
 	log "done"
 }
 
@@ -253,6 +277,7 @@ step_user() {
 		install_sudoers
 	fi
 	user_done || die "user $DEPLOY_USER is not configured after step 3"
+	CHANGED=1
 	log "done"
 }
 
@@ -308,6 +333,7 @@ step_firewall() {
 	done
 	ufw --force enable
 	firewall_done || die "ufw is not configured after step 4"
+	CHANGED=1
 	log "done"
 }
 
@@ -425,7 +451,139 @@ step_sshd() {
 	# Inactive under socket activation means the next connection starts sshd with the new config anyway.
 	systemctl try-reload-or-restart ssh.service
 	sshd_done || die "sshd is not configured after step 5"
+	CHANGED=1
 	log "done"
+}
+
+# A function defined earlier in the stdin stream wins; from a checkout the file next to this script is used.
+script_source() {
+	local name="$1" fn="vpsctl_script_${1//-/_}" dir="${VPSCTL_SCRIPTS_DIR:-$SCRIPT_DIR}"
+	if declare -F "$fn" >/dev/null; then
+		"$fn"
+		return
+	fi
+	[[ -n "$dir" && -f "$dir/$name" ]] || return 1
+	cat "$dir/$name"
+}
+
+# Every script is resolved before anything is installed, so a missing one leaves the system unchanged.
+stage_server_scripts() {
+	local name
+	STAGE_DIR="$(mktemp -d)"
+	for name in "${!SERVER_SCRIPTS[@]}"; do
+		if ! script_source "$name" >"$STAGE_DIR/$name"; then
+			rm -rf "$STAGE_DIR"
+			die "$name is not provided: no vpsctl_script_${name//-/_} function and no file in ${VPSCTL_SCRIPTS_DIR:-${SCRIPT_DIR:-<stdin>}}"
+		fi
+	done
+}
+
+# Content is compared instead of --version so a locally edited script is also replaced.
+script_installed() {
+	local name="$1" dest="${SERVER_SCRIPTS[$1]}"
+	[[ "$(mode_owner "$dest")" == "755 root root" ]] && cmp -s "$STAGE_DIR/$name" "$dest"
+}
+
+layout_done() {
+	local name
+	[[ "$(mode_owner "$PROJECTS_ROOT")" == "755 $DEPLOY_USER $DEPLOY_USER" ]] || return 1
+	[[ "$(mode_owner "$VPSCTL_ETC")" == "755 root root" ]] || return 1
+	for name in "${!SERVER_SCRIPTS[@]}"; do
+		script_installed "$name" || return 1
+	done
+}
+
+step_layout() {
+	export VPSCTL_STEP=6
+	stage_server_scripts
+	if layout_done; then
+		rm -rf "$STAGE_DIR"
+		log "skip"
+		return 0
+	fi
+	install -d -m 0755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$PROJECTS_ROOT"
+	install -d -m 0755 -o root -g root "$VPSCTL_ETC"
+	local name
+	for name in "${!SERVER_SCRIPTS[@]}"; do
+		if ! script_installed "$name"; then
+			log "installing ${SERVER_SCRIPTS[$name]}"
+			install -m 0755 -o root -g root "$STAGE_DIR/$name" "${SERVER_SCRIPTS[$name]}"
+		fi
+	done
+	if ! layout_done; then
+		rm -rf "$STAGE_DIR"
+		die "layout is not configured after step 6"
+	fi
+	rm -rf "$STAGE_DIR"
+	CHANGED=1
+	log "done"
+}
+
+auto_upgrades_content() {
+	printf '// Managed by vpsctl bootstrap (ADR-040).\nAPT::Periodic::Update-Package-Lists "%s";\nAPT::Periodic::Unattended-Upgrade "%s";\n' "$1" "$1"
+}
+
+auto_upgrades_is() {
+	[[ "$(mode_owner "$AUTO_UPGRADES")" == "644 root root" && "$(<"$AUTO_UPGRADES")" == "$(auto_upgrades_content "$1")" ]]
+}
+
+# With --no-unattended-upgrades only an existing file that turns them on is touched; nothing is installed.
+unattended_done() {
+	if [[ "$UNATTENDED_UPGRADES" -eq 1 ]]; then
+		package_installed unattended-upgrades && auto_upgrades_is 1
+	else
+		[[ ! -f "$AUTO_UPGRADES" ]] || ! grep -Eq '^[[:space:]]*APT::Periodic::Unattended-Upgrade[[:space:]]+"1"' "$AUTO_UPGRADES"
+	fi
+}
+
+step_unattended() {
+	export VPSCTL_STEP=7
+	if unattended_done; then
+		log "skip"
+		return 0
+	fi
+	local value=0 tmp
+	if [[ "$UNATTENDED_UPGRADES" -eq 1 ]]; then
+		value=1
+		if ! package_installed unattended-upgrades; then
+			log "installing unattended-upgrades"
+			apt-get update
+			apt_install unattended-upgrades
+		fi
+	fi
+	log "writing $AUTO_UPGRADES (unattended upgrades: $value)"
+	tmp="$(mktemp)"
+	auto_upgrades_content "$value" >"$tmp"
+	install -m 0644 -o root -g root "$tmp" "$AUTO_UPGRADES"
+	rm -f "$tmp"
+	unattended_done || die "unattended-upgrades are not configured after step 7"
+	CHANGED=1
+	log "done"
+}
+
+server_yml_current() {
+	[[ -f "$SERVER_YML" && "$(mode_owner "$SERVER_YML")" == "644 root root" ]] || return 1
+	[[ "$(yq '.standard_version' "$SERVER_YML" 2>/dev/null)" == "$STANDARD_VERSION" ]] || return 1
+	[[ "$(yq '.bootstrap_version' "$SERVER_YML" 2>/dev/null)" == "$BOOTSTRAP_VERSION" ]]
+}
+
+# Written last, so the file records only a fully successful run, and left as is when nothing changed (F-04).
+record_server_yml() {
+	export VPSCTL_STEP=6
+	if [[ "$CHANGED" -eq 0 ]] && server_yml_current; then
+		log "skip $SERVER_YML"
+		return 0
+	fi
+	local now first="" tmp
+	now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	[[ ! -f "$SERVER_YML" ]] || first="$(yq '.bootstrapped_at // ""' "$SERVER_YML" 2>/dev/null || true)"
+	[[ "$first" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || first="$now"
+	log "writing $SERVER_YML"
+	tmp="$(mktemp)"
+	printf 'standard_version: %s\nbootstrap_version: %s\nbootstrapped_at: %s\nupdated_at: %s\n' \
+		"$STANDARD_VERSION" "$BOOTSTRAP_VERSION" "$first" "$now" >"$tmp"
+	install -m 0644 -o root -g root "$tmp" "$SERVER_YML"
+	rm -f "$tmp"
 }
 
 main() {
@@ -437,6 +595,9 @@ main() {
 	step_user
 	step_firewall
 	step_sshd
+	step_layout
+	step_unattended
+	record_server_yml
 }
 
 main "$@"
