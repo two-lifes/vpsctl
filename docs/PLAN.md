@@ -35,7 +35,8 @@
 - **Проверки:** mini (shellcheck), scripts-docker
 
 ### T-1.3 Bootstrap: пользователь deploy и sudoers (шаг 3)
-- [ ] Статус
+- [x] Статус
+- **Итог:** `bootstrap.sh`: аргумент `--deploy-key` с проверкой до изменений (ADR-044), шаг 3 — `deploy` с домом `/home/deploy`, группой `docker`, `~/.ssh` 700 / `authorized_keys` 600, ключ без дублей (сравнение без комментария), sudoers `vpsctl-deploy` 440 только на `/usr/local/sbin/vpsctl-root` с проверкой `visudo` до установки и после; тест `bootstrap_user_test.sh` (отказы ввода, права, `sudo -l -U deploy`, запрет `sudo -n bash`, повтор со `skip`, починка дрейфа); `bootstrap_packages_test.sh` передает ключ. Контейнерные прогоны проверяются только в CI (локально нет Docker). За рамками: сам `vpsctl-root` (T-1.9), передача ключа при повторном bootstrap через `vpsctl-root` (T-3.6).
 - **Цель:** создать `deploy` с ключом, группой `docker` и ограниченным sudo.
 - **Требования:** F-03, F-04; SPEC §9
 - **Файлы:** `scripts/bootstrap.sh`, `tests/scripts/bootstrap_user_test.sh`

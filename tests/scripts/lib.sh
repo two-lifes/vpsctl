@@ -4,6 +4,10 @@
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT
 
+# Public half of a throwaway key; the private half was never kept.
+TEST_DEPLOY_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDhAP1G1sijnc/8jJyPtrCYnlQQvdJ24Wt+v5H05bKac vpsctl-test"
+export TEST_DEPLOY_KEY
+
 TEST_FAILURES=0
 status=0
 output=""

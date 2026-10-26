@@ -25,23 +25,23 @@ system_state() {
 before="$(system_state)"
 
 printf '%s\n' 'ID=debian' 'VERSION_ID="12"' 'VERSION_CODENAME=bookworm' >"$tmp/debian"
-run env VPSCTL_OS_RELEASE="$tmp/debian" bash "$BOOTSTRAP"
+run env VPSCTL_OS_RELEASE="$tmp/debian" bash "$BOOTSTRAP" --deploy-key "$TEST_DEPLOY_KEY"
 assert_status_nonzero "debian"
 assert_contains "[step 1] error: unsupported OS: debian 12" "debian"
 
 printf '%s\n' 'ID=ubuntu' 'VERSION_ID="22.04"' 'VERSION_CODENAME=jammy' >"$tmp/jammy"
-run env VPSCTL_OS_RELEASE="$tmp/jammy" bash "$BOOTSTRAP"
+run env VPSCTL_OS_RELEASE="$tmp/jammy" bash "$BOOTSTRAP" --deploy-key "$TEST_DEPLOY_KEY"
 assert_status_nonzero "ubuntu 22.04"
 assert_contains "[step 1] error: unsupported OS: ubuntu 22.04" "ubuntu 22.04"
 
-run env VPSCTL_ARCH=riscv64 bash "$BOOTSTRAP"
+run env VPSCTL_ARCH=riscv64 bash "$BOOTSTRAP" --deploy-key "$TEST_DEPLOY_KEY"
 assert_status_nonzero "riscv64"
 assert_contains "[step 1] error: unsupported architecture: riscv64" "riscv64"
 
 assert_eq "$before" "$(system_state)" "system changed after a refused run"
 
 # First run installs everything.
-run bash "$BOOTSTRAP"
+run bash "$BOOTSTRAP" --deploy-key "$TEST_DEPLOY_KEY"
 assert_status 0 "first run"
 assert_contains "[step 2] done" "first run"
 
@@ -68,14 +68,14 @@ apt_state() {
 }
 
 before="$(apt_state)"
-run bash "$BOOTSTRAP"
+run bash "$BOOTSTRAP" --deploy-key "$TEST_DEPLOY_KEY"
 assert_status 0 "second run"
 assert_contains "[step 2] skip" "second run"
 assert_eq "$before" "$(apt_state)" "apt sources changed on re-run"
 
 # A tampered yq binary is replaced on the next run.
 printf 'not yq\n' >/usr/local/bin/yq
-run bash "$BOOTSTRAP"
+run bash "$BOOTSTRAP" --deploy-key "$TEST_DEPLOY_KEY"
 assert_status 0 "yq repair run"
 run yq --version
 assert_contains "v4.54.1" "yq restored"

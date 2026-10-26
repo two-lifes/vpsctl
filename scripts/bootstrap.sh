@@ -22,8 +22,37 @@ declare -A YQ_SHA256=(
 	[arm64]="189088da0c6429ec5178dfaab1a114805f6cab0b61b165ab236efedf1d57a71b"
 )
 
+DEPLOY_USER="deploy"
+DEPLOY_HOME="/home/deploy"
+SUDOERS_FILE="/etc/sudoers.d/vpsctl-deploy"
+VPSCTL_ROOT="/usr/local/sbin/vpsctl-root"
+DEPLOY_KEY_RE='^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]+={0,3}( [^[:cntrl:]]*)?$'
+
 ARCH=""
 CODENAME=""
+DEPLOY_KEY=""
+
+usage() {
+	die "usage: bootstrap.sh --deploy-key '<ssh public key>'"
+}
+
+# Input is validated before step 1 so a bad invocation never changes the system.
+parse_args() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--deploy-key)
+			[[ $# -ge 2 ]] || usage
+			DEPLOY_KEY="$2"
+			shift 2
+			;;
+		*)
+			die "unknown argument: $1"
+			;;
+		esac
+	done
+	[[ -n "$DEPLOY_KEY" ]] || usage
+	[[ "$DEPLOY_KEY" =~ $DEPLOY_KEY_RE ]] || die "--deploy-key is not a single-line SSH public key"
+}
 
 # Same file as os_check, parsed rather than sourced.
 os_codename() {
@@ -130,11 +159,105 @@ step_packages() {
 	log "done"
 }
 
+sudoers_content() {
+	printf '# Managed by vpsctl bootstrap. deploy may run only vpsctl-root as root (ADR-031).\n%s ALL=(root) NOPASSWD: %s\n' \
+		"$DEPLOY_USER" "$VPSCTL_ROOT"
+}
+
+# Keys are compared by type and blob so a changed comment does not add a duplicate line.
+deploy_key_present() {
+	local file="$DEPLOY_HOME/.ssh/authorized_keys" type blob
+	read -r type blob _ <<<"$DEPLOY_KEY"
+	[[ -f "$file" ]] && awk -v t="$type" -v b="$blob" '$1 == t && $2 == b { found = 1 } END { exit !found }' "$file"
+}
+
+in_docker_group() {
+	local g
+	for g in $(id -nG "$DEPLOY_USER"); do
+		[[ "$g" == docker ]] && return 0
+	done
+	return 1
+}
+
+# Checked by command, not package: newer Ubuntu releases may provide sudo through sudo-rs.
+sudo_available() {
+	command -v sudo >/dev/null && command -v visudo >/dev/null
+}
+
+mode_owner() {
+	stat -c '%a %U %G' "$1" 2>/dev/null || true
+}
+
+user_done() {
+	id "$DEPLOY_USER" >/dev/null 2>&1 || return 1
+	[[ "$(getent passwd "$DEPLOY_USER" | cut -d: -f6)" == "$DEPLOY_HOME" ]] || return 1
+	in_docker_group || return 1
+	[[ "$(mode_owner "$DEPLOY_HOME/.ssh")" == "700 $DEPLOY_USER $DEPLOY_USER" ]] || return 1
+	[[ "$(mode_owner "$DEPLOY_HOME/.ssh/authorized_keys")" == "600 $DEPLOY_USER $DEPLOY_USER" ]] || return 1
+	deploy_key_present || return 1
+	sudo_available || return 1
+	[[ "$(mode_owner "$SUDOERS_FILE")" == "440 root root" && "$(<"$SUDOERS_FILE")" == "$(sudoers_content)" ]]
+}
+
+# The candidate is checked by visudo before it is moved into sudoers.d, so a broken file never becomes active.
+install_sudoers() {
+	local tmp
+	tmp="$(mktemp)"
+	sudoers_content >"$tmp"
+	chmod 0440 "$tmp"
+	if ! visudo -c -f "$tmp" >/dev/null; then
+		rm -f "$tmp"
+		die "generated sudoers file is invalid"
+	fi
+	install -m 0440 -o root -g root "$tmp" "$SUDOERS_FILE"
+	rm -f "$tmp"
+	visudo -c >/dev/null || die "sudoers configuration is invalid after writing $SUDOERS_FILE"
+}
+
+step_user() {
+	export VPSCTL_STEP=3
+	if user_done; then
+		log "skip"
+		return 0
+	fi
+	getent group docker >/dev/null || die "group docker does not exist"
+	if ! sudo_available; then
+		log "installing sudo"
+		apt-get update
+		apt_install sudo
+	fi
+	if ! id "$DEPLOY_USER" >/dev/null 2>&1; then
+		log "creating user $DEPLOY_USER"
+		# No password is set, so the account is locked for password login and reachable only by key.
+		useradd --create-home --home-dir "$DEPLOY_HOME" --shell /bin/bash "$DEPLOY_USER"
+	fi
+	if ! in_docker_group; then
+		log "adding $DEPLOY_USER to group docker"
+		usermod -aG docker "$DEPLOY_USER"
+	fi
+	install -d -m 0700 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$DEPLOY_HOME/.ssh"
+	[[ -f "$DEPLOY_HOME/.ssh/authorized_keys" ]] || : >"$DEPLOY_HOME/.ssh/authorized_keys"
+	chmod 0600 "$DEPLOY_HOME/.ssh/authorized_keys"
+	chown "$DEPLOY_USER:$DEPLOY_USER" "$DEPLOY_HOME/.ssh/authorized_keys"
+	if ! deploy_key_present; then
+		log "adding deploy key"
+		printf '%s\n' "$DEPLOY_KEY" >>"$DEPLOY_HOME/.ssh/authorized_keys"
+	fi
+	if [[ "$(mode_owner "$SUDOERS_FILE")" != "440 root root" || "$(<"$SUDOERS_FILE")" != "$(sudoers_content)" ]]; then
+		log "writing $SUDOERS_FILE"
+		install_sudoers
+	fi
+	user_done || die "user $DEPLOY_USER is not configured after step 3"
+	log "done"
+}
+
 main() {
+	parse_args "$@"
 	require_root
 	log "vpsctl bootstrap $BOOTSTRAP_VERSION"
 	step_os
 	step_packages
+	step_user
 }
 
 main "$@"
