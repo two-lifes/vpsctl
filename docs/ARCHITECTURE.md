@@ -1,6 +1,6 @@
 # Архитектура vpsctl
 
-Источник требований — docs/SPEC.md; стандарт сервера — docs/SERVER-STANDARD.md. Документ описывает целевую структуру; пакеты появляются по мере выполнения задач из docs/PLAN.md. Пометка `[Q-n]` — зависит от открытого вопроса в PLAN.md.
+Источник требований — docs/SPEC.md; стандарт сервера — docs/SERVER-STANDARD.md. Документ описывает целевую структуру; пакеты появляются по мере выполнения задач из docs/PLAN.md. Ссылки ADR-NNN — решения из docs/DECISIONS.md.
 
 ## 1. Компоненты
 
@@ -37,7 +37,8 @@ GitHub Actions ── SSH (ключ из secrets) ──► vpsctl-deploy       
 | `internal/tui/screens/{servers,server,project,logs,wizard}/` | Экраны из SPEC §8 |
 | `scripts/bootstrap.sh` | Bootstrap VPS |
 | `scripts/vpsctl-deploy` | Скрипт деплоя (ставится в `/usr/local/bin/`) |
-| `scripts/vpsctl-collect` | Коллектор `[Q-7]` |
+| `scripts/vpsctl-collect` | Коллектор (ставится в `/usr/local/bin/`, ADR-035) |
+| `scripts/vpsctl-root` | Привилегированные подкоманды (ставится в `/usr/local/sbin/`, ADR-031) |
 | `scripts/lib/` | Общие bash-функции (лог, проверка ОС, идемпотентные хелперы) |
 | `templates/{bot,web,web-db,static}/` | `compose.yml`, `vpsctl.yml`, при необходимости `Dockerfile`, nginx-шаблон |
 | `templates/github-actions/` | Workflow автодеплоя (этап 5) |
@@ -53,8 +54,8 @@ GitHub Actions ── SSH (ключ из secrets) ──► vpsctl-deploy       
 
 1. `poller` для каждого сервера параллельно (с ограничением конкурентности) открывает SSH-сессию через `sshx`.
 2. `sshx` проверяет отпечаток по `known_hosts` (F-02); несовпадение — ошибка `HostKeyChanged`, подключение блокируется до подтверждения в UI.
-3. Клиент запускает `vpsctl-collect --version`; если версия отличается от встроенной в бинарник — передает новый скрипт через stdin и устанавливает `[Q-7]`.
-4. Запуск коллектора; stdout — один JSON-документ, stderr — диагностика.
+3. Клиент запускает `vpsctl-collect --version`; если версия отличается от встроенной в бинарник — передает новый скрипт через stdin и устанавливает (ADR-035).
+4. Запуск `sudo vpsctl-root collect` (коллектор под root, чтобы читать сертификаты и процессы портов); stdout — один JSON-документ, stderr — диагностика.
 5. `collector` декодирует JSON; ошибки отдельных секций приходят в `errors[]` и не ломают остальные.
 6. Результат отправляется в TUI сообщением `ServerStateMsg{server, state, err}`; ошибка одного сервера отображается только в его строке.
 
@@ -63,7 +64,8 @@ GitHub Actions ── SSH (ключ из secrets) ──► vpsctl-deploy       
 ### 3.2 Bootstrap (F-03, F-04)
 
 Способ А: подключение под root (пароль или ключ хостера) → подтверждение отпечатка → `bootstrap.sh` передается через stdin `bash -s -- <args>` → stdout стримится в TUI → проверка входа под `deploy` → чтение `/etc/vpsctl/server.yml` → статус «готов».
-Способ Б: генерация однострочника `[Q-6]`.
+Способ Б: однострочник для веб-консоли только добавляет ключ пользователя в `authorized_keys` root, дальше — как способ А (ADR-034).
+Повторный bootstrap: под `deploy` через `sudo vpsctl-root bootstrap`, скрипт передается через stdin (ADR-031).
 
 ### 3.3 Деплой (F-10…F-17)
 
@@ -123,7 +125,7 @@ GitHub Actions ── SSH (ключ из secrets) ──► vpsctl-deploy       
 - `status` проекта: `running` (все контейнеры running), `stopped` (нет запущенных), `failed` (есть exited с ненулевым кодом / restarting / unhealthy).
 - `managed: true` ⇔ есть `/opt/<проект>/app/vpsctl.yml` (ADR-021); иначе папка попадает в `unmanaged.dirs`. Контейнеры без compose-проекта `vpsctl-*` — в `unmanaged.containers`.
 - Размеры — байты, время — RFC 3339 UTC, отсутствующее значение — `null`.
-- Чтение сертификатов и процессов портов под `deploy` `[Q-5]`.
+- Коллектор работает под root через `vpsctl-root collect`, поэтому читает сертификаты и процессы портов напрямую (ADR-031, ADR-035).
 
 ## 5. Конфиги клиента
 
